@@ -92,13 +92,13 @@ plt.show()
 
 
     
-![png](README_files/README_3_0.png)
+![png](2d_cooling_front_files/2d_cooling_front_3_0.png)
     
 
 
 
     
-![png](README_files/README_3_1.png)
+![png](2d_cooling_front_files/2d_cooling_front_3_1.png)
     
 
 
@@ -116,10 +116,11 @@ $$
 \theta^{n+1}=\tfrac13\theta^n+\tfrac23\!\big(\theta^{(2)}+\Delta t\,R(\theta^{(2)})\big).
 $$
 
-The time-step, $\Delta t$, is limited by both an adevective and diffusive CFL condition:
+The time-step, $\Delta t$, is limited by the following constraint to ensure the integration does not blow up:
 
-$$\Delta t \le \min\!\Big(\underbrace{C_a\,\tfrac{\Delta x}{|\mathbf u|_{\max}}}_{\text{advective}},\;
-\underbrace{C_d\,\tfrac{\Delta x^2}{\chi}}_{\text{diffusive}}\Big),$$
+$$
+\Delta t = C\Big(\dfrac{\theta}{\text{RHS}}\Big)
+$$
 
 ## Pseudo-Spectral Method
 
@@ -134,23 +135,57 @@ While the derivatives are computed in frequency space, we use the Inverse Fast F
 
 ```python
 # psuedo-spectral method
-def compute_rhs(theta, ux, uy, KX, KY, K_sq, chi, S, dealias_mask):
-    theta_hat = np.fft.fft2(theta) * dealias_mask
+def compute_rhs(theta, ux, uy, KX, KY, K_sq, chi, S_0, dealias_mask):
+    theta_hat = np.fft.fft2(theta) * dealias_mask           # theta in fourier space + dealias
     dtheta_dx = np.fft.ifft2(1j * KX * theta_hat).real
     dtheta_dy = np.fft.ifft2(1j * KY * theta_hat).real
     laplacian = np.fft.ifft2(-K_sq * theta_hat).real
-    return S - (ux * dtheta_dx + uy * dtheta_dy) + chi * laplacian
+    reaction = S_0 * 0.5 * (np.tanh((theta - 0.5 + 0.2) / 0.04) - np.tanh((theta - 0.5 - 0.2) / 0.04)) # source term: rounded top-hat, positive=burning, negative=cooling
+    return reaction - (ux * dtheta_dx + uy * dtheta_dy) + chi * laplacian
 
 # rk3 setup
-def rk3_step(theta, ux, uy, KX, KY, K_sq, chi, S, dt, dealias_mask):
-    rhs1 = compute_rhs(theta, ux, uy, KX, KY, K_sq, chi, S, dealias_mask)
+def rk3_step(theta, ux, uy, KX, KY, K_sq, chi, S_0, dt, dealias_mask, rhs1=None):
+    if rhs1 is None:
+        rhs1 = compute_rhs(theta, ux, uy, KX, KY, K_sq, chi, S_0, dealias_mask)
     theta1 = theta + dt * rhs1
-    
-    rhs2 = compute_rhs(theta1, ux, uy, KX, KY, K_sq, chi, S, dealias_mask)
+
+    rhs2 = compute_rhs(theta1, ux, uy, KX, KY, K_sq, chi, S_0, dealias_mask)
     theta2 = 0.75 * theta + 0.25 * (theta1 + dt * rhs2)
-    
-    rhs3 = compute_rhs(theta2, ux, uy, KX, KY, K_sq, chi, S, dealias_mask)
+
+    rhs3 = compute_rhs(theta2, ux, uy, KX, KY, K_sq, chi, S_0, dealias_mask)
     return (1.0 / 3.0) * theta + (2.0 / 3.0) * (theta2 + dt * rhs3)
+
+def compute_dt(theta, rhs, dx, max_u, chi, C_a=0.5, C_d=0.2, C_s=0.5, floor_frac=1e-2):
+    dt_adv = C_a * (dx/max_u) # advective CFL
+    dt_dif = C_d * (dx**2 / chi) # diffusive CFL
+    left, right = np.abs(theta), np.abs(rhs) # used to compute theta/|RHS| local timescale
+    active = (left > floor_frac * left.max()) & (right > 0) # ignore too small vals
+    dt_src = C_s * np.min(left[active] / right[active]) if active.any() else np.inf
+    return min(dt_adv, dt_dif, dt_src)
+
+#simulator
+def simulator(Pe, Da, ux, uy, X, KX, KY, K_sq, U_rms, max_u, dx, Lx, lo, hi, width, save_times, dealias_mask, C_a=0.5, C_d=0.2, C_s=0.5):
+    chi = (U_rms * Lx) / Pe
+    S_0 = (Da * U_rms) / Lx
+
+    theta = np.clip(0.5 * (np.tanh((X - lo)/width) - np.tanh((X - hi)/width)), 0, 1) # initial condition
+
+    st = sorted(save_times)
+    snap = {'chi':chi, 'S_0':S_0, 'n_steps':0}
+    t, idx = 0.0, 0
+    if st[0] <= 0.0:
+        snap[st[0]] = theta.copy(); idx = 1
+    
+    while idx < len(st):
+        rhs = compute_rhs(theta, ux, uy, KX, KY, K_sq, chi, S_0, dealias_mask)
+        dt = min(compute_dt(theta, rhs, dx, max_u, chi, C_a, C_d, C_s), st[idx] - t)
+        theta = rk3_step(theta, ux, uy, KX, KY, K_sq, chi, dt, S_0, dealias_mask, rhs1=rhs)
+        theta = np.clip(theta, 0.0, 1.0)
+        t += dt; snap['n_steps'] += 1
+        if t >= st[idx] - 1e-12:
+            snap[st[idx]] = theta.copy(); t = st[idx]; idx += 1
+    
+    return snap
 
 # global setup
 nx, ny = ASPECT * NT, NT
@@ -172,7 +207,7 @@ U_rms_raw = np.sqrt(np.mean(ux**2 + uy**2))
 ux = ux / U_rms_raw
 uy = uy / U_rms_raw
 
-U_rms = np.sqrt(np.mean(ux**2 + uy**2)) # Now exactly 1.0
+U_rms = np.sqrt(np.mean(ux**2 + uy**2))
 max_u = np.max(np.sqrt(ux**2 + uy**2))
 
 x = np.linspace(0, Lx, nx, endpoint=False)
@@ -180,88 +215,56 @@ y = np.linspace(0, Ly, ny, endpoint=False)
 X, Y = np.meshgrid(x, y)
 
 lo, hi = Lx * 0.25, Lx * 0.75
-width = 0.5  
+width = 0.5
 
 # parameters for sim
-Pe_list = [0.5, 200.0, 200.0]
+save_times = [0.0, 1.25, 2.5, 3.75, 5.0]
+Pe_list = [20.0, 200.0, 200.0]
 Da_list = [0.1, 0.1, 5.0]
-
-n_steps = 400
-save_steps = [0, 100, 250, 400]
-all_results = [] 
-
-for Pe, Da in zip(Pe_list, Da_list):
-    print(f"Running Pe={Pe}, Da={Da}")
-    
-    chi = (U_rms * Lx) / Pe
-    S_0 = (Da * U_rms) / Lx 
-    
-    # initial condition
-    theta = np.clip(0.5 * (np.tanh((X - lo) / width) - np.tanh((X - hi) / width)), 0, 1)
-    S = np.where((X >= lo) & (X <= hi), S_0, 0.0)
-    
-    # calc stable dt
-    dt_adv = 0.5 * (dx / max_u)
-    dt_dif = 0.2 * (dx**2 / chi)
-    dt = min(dt_adv, dt_dif)
-    
-    print(f"chi: {chi:.4f} | S_0: {S_0:.4f} | dt: {dt:.6f}")
-    
-    snapshots = {'dt': dt}
-    for step in range(n_steps + 1):
-        if step in save_steps:
-            snapshots[step] = theta.copy()
-        if step < n_steps:
-            theta = rk3_step(theta, ux, uy, KX, KY, K_sq, chi, S, dt, dealias_mask)
-            
-    all_results.append(snapshots)
-
-# plots
-num_runs = len(Pe_list)
-num_snaps = len(save_steps)
 regime_names = ["Diffusive", "Turbulent", "Front"]
 
-fig, axes = plt.subplots(num_runs, num_snaps, figsize=(14, 3.5 * num_runs), constrained_layout=True)
+all_results = []
+for Pe, Da in zip(Pe_list, Da_list):
+    print(f"Running Pe={Pe}, Da={Da}")
+    snap = simulator(Pe, Da, ux, uy, X, KX, KY, K_sq, U_rms, max_u, dx, Lx, lo, hi, width, save_times, dealias_mask)
+    print(f"chi: {snap['chi']:.4f} | S_0: {snap['S_0']:.4f} | steps: {snap['n_steps']}")
+    all_results.append(snap)
+
+fig, axes = plt.subplots(len(Pe_list), len(save_times), figsize=(16, 3.5 * len(Pe_list)), constrained_layout=True)
 
 for row_idx, (Pe, Da, name) in enumerate(zip(Pe_list, Da_list, regime_names)):
-    snapshots = all_results[row_idx]
-    dt = snapshots['dt']
-    
-    for col_idx, step in enumerate(save_steps):
+    snap = all_results[row_idx]
+
+    for col_idx, ts in enumerate(save_times):
         ax = axes[row_idx, col_idx]
-        im = ax.imshow(snapshots[step], extent=[0, Lx, Ly, 0], origin='upper', cmap='RdBu_r', vmin=0, vmax=1)
-        
-        if row_idx == 0:
-            ax.set_title(f'Step {step}')
-            
+        im = ax.imshow(snap[ts], extent=[0, Lx, Ly, 0], origin='upper', cmap='RdBu_r', vmin=0, vmax=1, interpolation='nearest')
+        ax.text(0.04, 0.92, f't = {ts}', transform=ax.transAxes, color='white', fontweight='bold', fontsize=10, va='top', bbox=dict(facecolor='black', alpha=0.55, edgecolor='none', pad=2))
+
         if col_idx == 0:
-            ax.set_ylabel(f'{name}\nPe={Pe}\nDa={Da}\n', fontsize=12, fontweight='bold')
+            ax.set_ylabel(f'{name}\n Pe={Pe}\n Da={Da}\n', fontsize=12, fontweight='bold')
         else:
-            ax.set_yticks([]) 
-            
-        ax.text(0.05, 0.05, f't = {step*dt:.3f}', transform=ax.transAxes, 
-                color='white', fontweight='bold', bbox=dict(facecolor='black', alpha=0.5, edgecolor='none'))
-            
-        if row_idx == num_runs - 1:
+            ax.set_yticks([])
+        if row_idx == len(Pe_list) - 1:
             ax.set_xlabel('x')
         else:
             ax.set_xticks([])
 
-fig.colorbar(im, ax=axes, label='θ', location='right', shrink=0.8)
+    fig.colorbar(im, ax=axes[row_idx, :], label='θ', location='right', shrink=0.9)
+
 plt.show()
 ```
 
-    Running Pe=0.5, Da=0.1
-    chi: 40.0000 | S_0: 0.0050 | dt: 0.000031
+    Running Pe=20.0, Da=0.1
+    chi: 1.0000 | S_0: 0.0050 | steps: 47009
     Running Pe=200.0, Da=0.1
-    chi: 0.1000 | S_0: 0.0050 | dt: 0.012207
+    chi: 0.1000 | S_0: 0.0050 | steps: 412
     Running Pe=200.0, Da=5.0
-    chi: 0.1000 | S_0: 0.2500 | dt: 0.012207
+    chi: 0.1000 | S_0: 0.2500 | steps: 1174
 
 
 
     
-![png](README_files/README_5_1.png)
+![png](2d_cooling_front_files/2d_cooling_front_5_1.png)
     
 
 
