@@ -92,13 +92,13 @@ plt.show()
 
 
     
-![png](2d_cooling_front_files/2d_cooling_front_3_0.png)
+![png](2d_turbulent_front_files/2d_turbulent_front_3_0.png)
     
 
 
 
     
-![png](2d_cooling_front_files/2d_cooling_front_3_1.png)
+![png](2d_turbulent_front_files/2d_turbulent_front_3_1.png)
     
 
 
@@ -119,7 +119,7 @@ $$
 The time-step, $\Delta t$, is limited by the following constraint to ensure the integration does not blow up:
 
 $$
-\Delta t = C\Big(\dfrac{\theta}{\text{RHS}}\Big)
+\Delta t = \min \Big(C_a \Big( \dfrac{\Delta x}{\max \mathbf{u}} \Big), C_d \Big( \dfrac{\Delta x ^2}{\chi} \Big), C_s\Big(\dfrac{\theta}{\text{RHS}}\Big) \Big)
 $$
 
 ## Pseudo-Spectral Method
@@ -179,7 +179,7 @@ def simulator(Pe, Da, ux, uy, X, KX, KY, K_sq, U_rms, max_u, dx, Lx, lo, hi, wid
     while idx < len(st):
         rhs = compute_rhs(theta, ux, uy, KX, KY, K_sq, chi, S_0, dealias_mask)
         dt = min(compute_dt(theta, rhs, dx, max_u, chi, C_a, C_d, C_s), st[idx] - t)
-        theta = rk3_step(theta, ux, uy, KX, KY, K_sq, chi, dt, S_0, dealias_mask, rhs1=rhs)
+        theta = rk3_step(theta, ux, uy, KX, KY, K_sq, chi, S_0, dt, dealias_mask, rhs1=rhs)
         theta = np.clip(theta, 0.0, 1.0)
         t += dt; snap['n_steps'] += 1
         if t >= st[idx] - 1e-12:
@@ -255,16 +255,16 @@ plt.show()
 ```
 
     Running Pe=20.0, Da=0.1
-    chi: 1.0000 | S_0: 0.0050 | steps: 47009
+    chi: 1.0000 | S_0: 0.0050 | steps: 4096
     Running Pe=200.0, Da=0.1
     chi: 0.1000 | S_0: 0.0050 | steps: 412
     Running Pe=200.0, Da=5.0
-    chi: 0.1000 | S_0: 0.2500 | steps: 1174
+    chi: 0.1000 | S_0: 0.2500 | steps: 412
 
 
 
     
-![png](2d_cooling_front_files/2d_cooling_front_5_1.png)
+![png](2d_turbulent_front_files/2d_turbulent_front_5_1.png)
     
 
 
