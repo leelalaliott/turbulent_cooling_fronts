@@ -122,27 +122,8 @@ $$
 \Delta t = \min \Big(C_a \Big( \dfrac{\Delta x}{\max \mathbf{u}} \Big), C_d \Big( \dfrac{\Delta x ^2}{\chi} \Big), C_s\Big(\dfrac{\theta}{\text{RHS}}\Big) \Big)
 $$
 
-## Pseudo-Spectral Method
-
-To advect the scalar field $\theta$, we must evaluate the nonlinear advection term $\mathbf{u} \cdot \nabla \theta$ and the diffusion term $\chi \Delta \theta$.
-
-Finite difference methods evaluate these gradients on the physical grid, which introduces numerical dispersion and smearing. The pseudo-spectral method solves this by calculating all spatial derivatives in Fourier space, where derivatives become exact algebraic multiplications:
-
-$$\partial_x \theta \implies ik_x \hat{\theta}, \qquad \Delta \theta \implies -(k_x^2 + k_y^2)\hat{\theta}$$
-
-While the derivatives are computed in frequency space, we use the Inverse Fast Fourier Transform to bring the exact gradients back to physical space to multiply them by the velocity field. Doing this multiplication in physical space takes $\mathcal{O}(N \log N)$ operations via FFTs, which is much faster than doing the exact spectral convolution in Fourier space $\mathcal{O}(N^2)$.
-
 
 ```python
-# psuedo-spectral method
-def compute_rhs(theta, ux, uy, KX, KY, K_sq, chi, S_0, dealias_mask):
-    theta_hat = np.fft.fft2(theta) * dealias_mask           # theta in fourier space + dealias
-    dtheta_dx = np.fft.ifft2(1j * KX * theta_hat).real
-    dtheta_dy = np.fft.ifft2(1j * KY * theta_hat).real
-    laplacian = np.fft.ifft2(-K_sq * theta_hat).real
-    reaction = S_0 * 0.5 * (np.tanh((theta - 0.5 + 0.2) / 0.04) - np.tanh((theta - 0.5 - 0.2) / 0.04)) # source term: rounded top-hat, positive=burning, negative=cooling
-    return reaction - (ux * dtheta_dx + uy * dtheta_dy) + chi * laplacian
-
 # rk3 setup
 def rk3_step(theta, ux, uy, KX, KY, K_sq, chi, S_0, dt, dealias_mask, rhs1=None):
     if rhs1 is None:
@@ -162,7 +143,34 @@ def compute_dt(theta, rhs, dx, max_u, chi, C_a=0.5, C_d=0.2, C_s=0.5, floor_frac
     active = (left > floor_frac * left.max()) & (right > 0) # ignore too small vals
     dt_src = C_s * np.min(left[active] / right[active]) if active.any() else np.inf
     return min(dt_adv, dt_dif, dt_src)
+```
 
+## Pseudo-Spectral Method
+
+To advect the scalar field $\theta$, we must evaluate the nonlinear advection term $\mathbf{u} \cdot \nabla \theta$ and the diffusion term $\chi \Delta \theta$.
+
+Finite difference methods evaluate these gradients on the physical grid, which introduces numerical dispersion and smearing. The pseudo-spectral method solves this by calculating all spatial derivatives in Fourier space, where derivatives become exact algebraic multiplications:
+
+$$\partial_x \theta \implies ik_x \hat{\theta}, \qquad \Delta \theta \implies -(k_x^2 + k_y^2)\hat{\theta}$$
+
+While the derivatives are computed in frequency space, we use the Inverse Fast Fourier Transform to bring the exact gradients back to physical space to multiply them by the velocity field. Doing this multiplication in physical space takes $\mathcal{O}(N \log N)$ operations via FFTs, which is much faster than doing the exact spectral convolution in Fourier space $\mathcal{O}(N^2)$.
+
+
+```python
+# psuedo-spectral method
+def compute_rhs(theta, ux, uy, KX, KY, K_sq, chi, S_0, dealias_mask):
+    theta_hat = np.fft.fft2(theta) * dealias_mask           # theta in fourier space + dealias
+    dtheta_dx = np.fft.ifft2(1j * KX * theta_hat).real
+    dtheta_dy = np.fft.ifft2(1j * KY * theta_hat).real
+    laplacian = np.fft.ifft2(-K_sq * theta_hat).real
+    reaction = S_0 * 0.5 * (np.tanh((theta - 0.5 + 0.1) / 0.01) - np.tanh((theta - 0.5 - 0.1) / 0.01)) # source term: smooth top-hat centered at 0.5 with width of 0.1, positive=burning, negative=cooling
+    return reaction - (ux * dtheta_dx + uy * dtheta_dy) + chi * laplacian
+```
+
+## Simulation Loop and Setup
+
+
+```python
 #simulator
 def simulator(Pe, Da, ux, uy, X, KX, KY, K_sq, U_rms, max_u, dx, Lx, lo, hi, width, save_times, dealias_mask, C_a=0.5, C_d=0.2, C_s=0.5):
     chi = (U_rms * Lx) / Pe
@@ -264,7 +272,7 @@ plt.show()
 
 
     
-![png](2d_turbulent_front_files/2d_turbulent_front_5_1.png)
+![png](2d_turbulent_front_files/2d_turbulent_front_9_1.png)
     
 
 
